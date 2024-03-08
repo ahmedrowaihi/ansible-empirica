@@ -1,0 +1,104 @@
+- hosts: all
+  become: yes
+
+  tasks:
+    - name: Update all packages to the latest version
+      yum:
+        name: "*"
+        state: latest
+
+    - name: install git
+      shell: yum install git -y
+
+    - name: install nvs
+      shell: |
+        NVS_HOME="$HOME/.nvs"
+        git clone https://github.com/jasongin/nvs "$NVS_HOME"
+        . "$NVS_HOME/nvs.sh" install
+
+    - name: configure nvs
+      lineinfile:
+        dest: "{{ item }}"
+        line: "{{ item }}='$HOME/.nvs'"
+      with_items:
+        - ~/.bashrc
+        - ~/.bash_profile
+
+    - name: install node 14 for meteor
+      shell: |
+        NVS_HOME="$HOME/.nvs"
+        PATH="$NVS_HOME:$PATH"
+        nvs add 14.14.0
+        nvs use 14.14.0
+        nvs link 14.14.0
+
+    - name: install meteor
+      shell: npm install -g meteor --unsafe-perm
+
+    - name: install create-empirica-app globally
+      shell: npm install -g create-empirica-app --unsafe-perm
+
+    - name: create empirica app
+      shell: |
+        cd ~
+        METEOR_ALLOW_SUPERUSER=1 create-empirica-app my-app
+        cd my-app
+      args:
+        chdir: ~/
+      become_user: root
+
+    - name: install pm2
+      shell: npm install -g pm2
+
+    - name: Copy local.json file
+      copy:
+        src: cfg/local.json
+        dest: ~/my-app/local.json
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: create app script.sh
+      shell: |
+        cd ~/my-app
+        rm -rf .meteor/local/db
+        echo "METEOR_ALLOW_SUPERUSER=1 meteor --settings local.json" > script.sh
+        chmod +x script.sh
+
+    - name: run in the background
+      shell: pm2 start --name my-app script.sh
+      args:
+        chdir: ~/my-app
+
+    - name: display credentials
+      shell: |
+        echo "Your app is running at http://localhost:3000"
+        echo "Your admin credentials are:"
+        cat ~/my-app/local.json | grep "username"
+        cat ~/my-app/local.json | grep "password"
+      args:
+        chdir: ~/my-app
+
+    - name: install nginx
+      yum:
+        name: nginx
+        state: present
+
+    - name: Create nginx sites-available directory if not exists
+      ansible.builtin.file:
+        path: /etc/nginx/sites-available
+        state: directory
+        mode: "0755"
+        recurse: yes
+        force: no
+
+    - name: create nginx configuration
+      template:
+        src: cfg/nginx_config.j2
+        dest: /etc/nginx/sites-available/my-app
+      notify: Reload NGINX
+
+    - name: Restart nginx service
+      ansible.builtin.service:
+        name: nginx
+        state: restarted
